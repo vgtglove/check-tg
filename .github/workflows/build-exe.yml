@@ -1,0 +1,48 @@
+# .github/workflows/build-exe.yml
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main ]  # 当 main 分支有提交时触发
+  release:
+    types: [ created ]  # 当创建新发布时触发
+
+jobs:
+  build:
+    runs-on: windows-latest  # 使用 Windows 环境
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4  # 获取代码
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'  # 指定 Python 版本
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller  # 安装打包工具
+        pip install -r requirements.txt  # 安装项目依赖
+    
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed telegram_gui.py  # 替换为你的主脚本
+      env:
+        PYTHONUTF8: 1  # 确保 UTF-8 编码
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist  # 制品名称
+        path: dist/  # 要上传的文件路径
+    
+    - name: Attach to release
+      if: github.event_name == 'release'  # 仅在创建发布时执行
+      uses: svenstaro/upload-release-action@v4
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: dist/*  # 要附加到发布的文件
+        tag: ${{ github.ref }}
+        overwrite: true
