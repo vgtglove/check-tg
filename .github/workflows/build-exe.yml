@@ -40,7 +40,7 @@ jobs:
     
     - name: Attach to release
       if: github.event_name == 'release'  # 仅在创建发布时执行
-      uses: svenstaro/upload-release-action@v4
+      uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: dist/*  # 要附加到发布的文件
