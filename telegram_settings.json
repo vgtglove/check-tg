@@ -1,3 +1,67 @@
 {
-    "sessions": []
+    "sessions": [
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/917635846366.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        },
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/918840860803.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        },
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/917409629273.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        },
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/917394000022.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        },
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/918169516917.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        },
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/917596818164.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        },
+        {
+            "file_path": "/Users/lbg/.work/rbot/tg-check-msg/sessions/917355430539.session",
+            "is_active": true,
+            "cooldown_time": 180,
+            "batch_size": 6,
+            "error_count": 0,
+            "total_checks": 0,
+            "status": "空闲"
+        }
+    ]
 }
