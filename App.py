@@ -7,6 +7,7 @@ import configparser  # 添加到文件开头的import部分
 from datetime import datetime, timedelta
 from typing import List, Set, Dict, Tuple, Optional
 import pandas as pd  # 用于Excel导出功能
+from utils.threading_utils import SendMsgThread
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QTextEdit, QLabel,
                              QProgressBar, QFileDialog, QMessageBox, QLineEdit,
@@ -1098,7 +1099,7 @@ class AboutDialog(QDialog):
         layout = QVBoxLayout()
 
         # 标题
-        title_label = QLabel("Telegram筛号工具")
+        title_label = QLabel("Telegram发送工具")
         title_label.setObjectName("title")
         title_label.setAlignment(Qt.AlignCenter)
 
@@ -1109,12 +1110,12 @@ class AboutDialog(QDialog):
 
         # 描述
         description = QLabel(
-            "Telegram筛号工具是一款高效的电话号码检测软件，用于确认哪些电话号码已在Telegram上注册。")
+            "Telegram发送工具是一款高效的电话号码检测发送软件，用于确认哪些电话号码已在Telegram上注册。发送消息")
         description.setWordWrap(True)
         description.setAlignment(Qt.AlignCenter)
 
         # 版权信息
-        copyright_label = QLabel("© 2025 乔法克斯 版权所有")
+        copyright_label = QLabel("© 2025 zat 版权所有")
         copyright_label.setAlignment(Qt.AlignCenter)
 
         # 确定按钮
@@ -1683,7 +1684,7 @@ class TelegramGUI(QMainWindow):
 
     def setupBasicUI(self):
         """设置基本UI框架，快速显示窗口"""
-        self.setWindowTitle('Telegram筛号工具')
+        self.setWindowTitle('Telegram发送工具')
         self.setGeometry(100, 100, 1200, 800)
 
         # 应用全局样式表
@@ -1729,6 +1730,7 @@ class TelegramGUI(QMainWindow):
                 border-radius: 3px;
                 padding: 5px;
                 background-color: white;
+                color: #000000;
             }
             QScrollBar:vertical {
                 border: none;
@@ -1979,6 +1981,7 @@ class TelegramGUI(QMainWindow):
             QTableWidget::item {
                 padding: 4px;
                 border-bottom: 1px solid #F0F0F0;
+                color: #000201;
             }
             QTableWidget::item:selected {
                 background-color: #E3F2FD;
@@ -2181,6 +2184,7 @@ class TelegramGUI(QMainWindow):
                 background-color: #E3F2FD;
                 border-radius: 4px;
                 padding: 5px;
+                color: #000000;
             }
         """)
         note_layout = QHBoxLayout(note_container)
@@ -2266,6 +2270,7 @@ class TelegramGUI(QMainWindow):
                 border-radius: 6px;
                 margin-top: 12px;
                 padding-top: 10px;
+                color: #000000;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -2347,7 +2352,7 @@ class TelegramGUI(QMainWindow):
             "检测已添加号码的活跃度\n可以了解用户最近是否在线",
             "#9C27B0"
         )
-        self.check_activity_btn.clicked.connect(self.start_activity_check)
+        # self.check_activity_btn.clicked.connect(self.start_activity_check)
 
         # 停止按钮
         self.stop_btn = create_control_button(
@@ -2356,7 +2361,8 @@ class TelegramGUI(QMainWindow):
             "#FF5722"
         )
         self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop_check)
+        # self.stop_btn.clicked.connect(self.stop_check)
+        self.stop_btn.clicked.connect(self.stop_msg)
 
         # 打开结果位置按钮
         self.open_result_location_btn = create_control_button(
@@ -2376,7 +2382,7 @@ class TelegramGUI(QMainWindow):
         self.config_btn.clicked.connect(self.show_config_dialog)
 
         buttons_layout.addWidget(self.start_btn)
-        buttons_layout.addWidget(self.check_activity_btn)
+        # buttons_layout.addWidget(self.check_activity_btn)
         buttons_layout.addWidget(self.stop_btn)
         buttons_layout.addWidget(self.open_result_location_btn)
         buttons_layout.addWidget(self.config_btn)
@@ -3266,7 +3272,6 @@ class TelegramGUI(QMainWindow):
             self.check_activity_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             # 启动消息发送线程
-            from utils.threading_utils import SendMsgThread
             self.send_thread = SendMsgThread(
                 self.phone_numbers.copy(), message, self.sessions, self)
             self.send_thread.log_signal.connect(self.log)
@@ -3750,7 +3755,8 @@ class TelegramGUI(QMainWindow):
 
         # 只在整数百分比变化时输出日志，减少过多的输出
         if int(progress) % 5 == 0 or current == total or current == 1:
-            self.log(f"【筛号进度】已检测: {current}/{total} ({progress:.1f}%)")
+            # self.log(f"【筛号进度】已检测: {current}/{total} ({progress:.1f}%)")
+            self.log(f"【发送进度】已检测: {current}/{total} ({progress:.1f}%)")
 
         # 使用动画更新进度条
         if hasattr(self, 'progress_bar') and isinstance(self.progress_bar, StyledProgressBar):
@@ -3927,6 +3933,18 @@ class TelegramGUI(QMainWindow):
         """程序关闭前保存设置"""
         self.save_settings()
         super().closeEvent(event)
+
+    def stop_msg(self):
+        if hasattr(self, 'send_thread') and self.send_thread is not None:
+            if self.send_thread.isRunning():
+                self.log("正在停止消息发送...")
+                try:
+                    self.send_thread.stop()
+                except Exception as e:
+                    self.log(f"【停止错误】停止消息发送线程时发生错误: {str(e)}")
+        self.stop_btn.setEnabled(False)
+        self.start_btn.setEnabled(True)
+        self.check_activity_btn.setEnabled(True)
 
 
 class PhoneNumberImportThread(QThread):
@@ -4577,7 +4595,7 @@ if __name__ == '__main__':
                 title_font = QFont("Arial", 16, QFont.Bold)
                 painter.setFont(title_font)
                 painter.drawText(QRect(0, 40, self.width(), 40),
-                                 Qt.AlignCenter, "Telegram筛号工具")
+                                 Qt.AlignCenter, "Telegram发送工具")
 
                 # 副标题/版本
                 painter.setPen(QPen(QColor("#BBDEFB"), 1))

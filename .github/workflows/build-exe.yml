@@ -28,7 +28,7 @@ jobs:
     
     - name: Build executable
       run: |
-        pyinstaller --onefile --windowed telegram_gui.py  # 替换为你的主脚本
+        pyinstaller --onefile --windowed App.py  # 替换为你的主脚本
       env:
         PYTHONUTF8: 1  # 确保 UTF-8 编码
     
