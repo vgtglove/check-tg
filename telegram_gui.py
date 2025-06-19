@@ -7,22 +7,27 @@ import configparser  # 添加到文件开头的import部分
 from datetime import datetime, timedelta
 from typing import List, Set, Dict, Tuple, Optional
 import pandas as pd  # 用于Excel导出功能
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                           QHBoxLayout, QPushButton, QTextEdit, QLabel, 
-                           QProgressBar, QFileDialog, QMessageBox, QLineEdit, 
-                           QFrame, QGroupBox, QSplitter, QTableWidget, 
-                           QTableWidgetItem, QHeaderView, QInputDialog, QMenu, QAction, QDialog, QGridLayout, QScrollArea, QCheckBox, QSizePolicy,
-                           QMenuBar, QComboBox, QTabWidget, QRadioButton, QButtonGroup)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QPushButton, QTextEdit, QLabel,
+                             QProgressBar, QFileDialog, QMessageBox, QLineEdit,
+                             QFrame, QGroupBox, QSplitter, QTableWidget,
+                             QTableWidgetItem, QHeaderView, QInputDialog, QMenu, QAction, QDialog, QGridLayout, QScrollArea, QCheckBox, QSizePolicy,
+                             QMenuBar, QComboBox, QTabWidget, QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QDateTime, QPropertyAnimation, QEasingCurve, QRect, QPoint, QSize
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QCursor, QBrush, QPainter, QPen, QRadialGradient
 from telethon.sync import TelegramClient
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputPhoneContact, UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
 from telethon import functions, types
+from ui.dialogs.dialogs import SendMessageDialog
 from ui.ui_main import (
     PhoneNumberEdit, ConfigDialog, StyledProgressBar, AnimatedButton, StatusIndicator,
     AboutDialog, ContactDialog, ChangelogDialog, ActivityResultDialog, NumbersListWidget
 )
+from utils.phone_utils import normalize_phone_number, clean_phone_numbers
+from utils.session_utils import SessionStatus
+from utils.activity_utils import UserActivityStatus
+from utils.threading_utils import CheckThread, ActivityCheckThread, PhoneNumberImportThread
 
 # 启用高DPI缩放支持
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
@@ -32,620 +37,6 @@ QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 # 全局变量
 client_id_counter = 0  # 用于生成唯一的联系人ID
 
-# 核心功能函数，移植自TelegramPhoneNumberRegisteredScript.py
-def format_phone_number(phone: str) -> str:
-    """
-    格式化电话号码，统一格式
-    
-    Args:
-        phone: 输入的电话号码字符串
-    
-    Returns:
-        格式化后的电话号码（只保留数字）
-    """
-    # 移除所有空格、加号和其他非数字字符
-    formatted = ''.join(filter(str.isdigit, phone))
-    return formatted
-
-def clean_phone_numbers(file_content: List[str]) -> List[str]:
-    """
-    清理和格式化电话号码列表
-    
-    Args:
-        file_content: 从文件读取的原始行列表
-    
-    Returns:
-        清理后的电话号码列表
-    """
-    cleaned_numbers = []
-    for line in file_content:
-        # 处理可能存在多个号码的情况（以任意数量的空格分隔）
-        numbers = line.strip().split()
-        for number in numbers:
-            if number:  # 确保不是空字符串
-                formatted = format_phone_number(number)
-                if formatted:  # 确保格式化后不是空字符串
-                    cleaned_numbers.append(formatted)
-    return cleaned_numbers
-
-def load_registered_numbers() -> set:
-    """
-    加载已经检测过的号码
-    
-    Returns:
-        已注册号码的集合
-    """
-    registered = set()
-    try:
-        with open('phone_register.txt', 'r') as f:
-            for line in f:
-                number = line.strip()
-                if number:
-                    registered.add(number)
-    except FileNotFoundError:
-        # 如果文件不存在，返回空集合
-        pass
-    return registered
-
-async def check_phone_numbers(client: TelegramClient, phone_numbers: List[str], max_retries=3) -> List[str]:
-    """
-    检查一批手机号是否在Telegram上注册
-    
-    Args:
-        client: Telegram客户端实例
-        phone_numbers: 要检查的手机号列表
-        max_retries: 最大重试次数
-    
-    Returns:
-        已注册的手机号列表
-    """
-    global client_id_counter
-    registered_numbers = []
-    check_numbers = []
-    
-    # 加载已经检测过的号码
-    existing_registered = load_registered_numbers()
-
-    # 过滤掉已经检测过的号码
-    new_numbers = [num for num in phone_numbers if num not in existing_registered]
-    
-    if not new_numbers:
-        return []
-
-    # 将手机号转换为InputPhoneContact对象
-    for phone in new_numbers:
-        check_numbers.append(
-            InputPhoneContact(client_id=client_id_counter, phone=phone, first_name="",
-                              last_name=""))
-        client_id_counter += 1
-
-    retry_count = 0
-    while retry_count < max_retries:
-        try:
-            # 检查连接状态并尝试重连
-            if not client.is_connected():
-                await client.connect()
-                if not client.is_connected():
-                    raise ConnectionError("无法连接到Telegram服务器")
-
-            # 通过导入联系人的方式检查手机号
-            result = await client(ImportContactsRequest(check_numbers))
-            # 从结果中提取用户信息
-            resList = result.to_dict().get("users", [])
-            # 获取已注册用户的手机号
-            new_registered = {res.get("phone") for res in resList}
-            
-            # 记录每个号码的检测结果
-            log_handler = None
-            if hasattr(client, '_log_handler') and callable(client._log_handler):
-                log_handler = client._log_handler
-                
-            # 处理结果
-            for phone in new_numbers:
-                is_registered = phone in new_registered or phone in existing_registered
-                
-                # 记录日志
-                if log_handler:
-                    if is_registered:
-                        log_handler(f"【注册状态】 {phone} - 已注册✓")
-                    else:
-                        log_handler(f"【注册状态】 {phone} - 未注册✗")
-                
-                # 添加到结果列表
-                if phone in new_registered and phone not in existing_registered:
-                    registered_numbers.append(phone)
-            
-            return registered_numbers
-
-        except Exception as e:
-            retry_count += 1
-            # 返回错误，由GUI处理
-            if retry_count >= max_retries:
-                raise
-            
-            # 等待后重试
-            await asyncio.sleep(2)
-            
-            # 如果客户端断开，尝试重新连接
-            try:
-                if not client.is_connected():
-                    await client.connect()
-            except Exception as conn_err:
-                raise ConnectionError(f"重新连接失败: {str(conn_err)}")
-
-    return []
-
-class SessionStatus:
-    def __init__(self, file_path, use_defaults=False, config=None):
-        self.file_path = file_path
-        self.is_active = True
-        self.last_used = None
-        # 只在扫描新session时使用配置文件的默认值
-        if use_defaults and config and config.has_section('Settings'):
-            self.cooldown_time = config.getint('Settings', 'cooldown_time', fallback=180)
-            self.batch_size = config.getint('Settings', 'batch_size', fallback=10)
-        else:
-            self.cooldown_time = 180  # 默认冷却时间3分钟
-            self.batch_size = 10  # 默认每批检测10个号码
-        self.error_count = 0
-        self.total_checks = 0
-        self._status = "空闲"  # 内部状态变量
-
-    @property
-    def status(self):
-        """获取当前状态"""
-        return self._status
-
-    @status.setter
-    def status(self, value):
-        """设置当前状态"""
-        self._status = value
-
-    @property
-    def name(self):
-        return os.path.basename(self.file_path)
-
-    def can_use(self):
-        """检查session是否可用"""
-        if self._status != "空闲" and self._status != "可用":
-            return False
-        if self.last_used is None:
-            return True
-        # 检查是否达到冷却时间
-        elapsed = time.time() - self.last_used
-        return elapsed >= self.cooldown_time
-        
-    def to_dict(self):
-        """将SessionStatus对象转换为字典，用于JSON序列化"""
-        return {
-            'file_path': self.file_path,
-            'is_active': self.is_active,
-            'cooldown_time': self.cooldown_time,
-            'batch_size': self.batch_size,
-            'error_count': self.error_count,
-            'total_checks': self.total_checks,
-            'status': self._status
-        }
-    
-    @classmethod
-    def from_dict(cls, data):
-        """从字典创建SessionStatus对象，用于JSON反序列化"""
-        session = cls(data['file_path'])
-        session.is_active = data.get('is_active', True)
-        session.cooldown_time = data.get('cooldown_time', 180)
-        session.batch_size = data.get('batch_size', 10)
-        session.error_count = data.get('error_count', 0)
-        session.total_checks = data.get('total_checks', 0)
-        session._status = data.get('status', '空闲')
-        return session
-
-    def add_error(self, error_msg):
-        """增加错误计数并更新状态"""
-        self.error_count += 1
-        self._status = "错误" if "未授权" not in error_msg else "未授权"
-        return f"{self.name}: {error_msg} (错误次数: {self.error_count})"
-        
-    def reset_error(self):
-        """重置错误状态"""
-        if self._status == "错误":
-            self._status = "空闲"
-            
-    @property
-    def is_error(self):
-        """检查是否处于错误状态"""
-        return self._status == "错误" or self._status == "未授权"
-
-class UserActivityStatus:
-    """用户活跃度状态类，用于存储和处理用户活跃度信息"""
-    def __init__(self, phone_number: str, user_id: Optional[int] = None):
-        self.phone_number = phone_number  # 电话号码
-        self.user_id = user_id  # Telegram用户ID
-        self.last_seen = None  # 最后在线时间
-        self.activity_status = "未知"  # 活跃状态：在线/最近/一周内/一月内/很久以前/未知
-        self.check_time = None  # 检查时间
-        self.username = None  # 用户名
-        self.first_name = None  # 名字
-        self.last_name = None  # 姓氏
-        self.is_premium = False  # 是否为高级用户
-        self.is_bot = False  # 是否为机器人
-        self.is_verified = False  # 是否为认证用户
-        self.photo_url = None  # 头像URL
-
-    def update_from_user(self, user):
-        """从用户对象更新信息"""
-        if user:
-            self.user_id = user.id
-            # 正确获取用户名和姓名
-            self.username = user.username if hasattr(user, 'username') and user.username else ""
-            self.first_name = user.first_name if hasattr(user, 'first_name') and user.first_name else ""
-            self.last_name = user.last_name if hasattr(user, 'last_name') and user.last_name else ""
-            self.is_premium = getattr(user, 'premium', False)
-            self.is_bot = getattr(user, 'bot', False)
-            self.is_verified = getattr(user, 'verified', False)
-            self.check_time = datetime.now()
-            
-            # 处理用户状态
-            status = getattr(user, 'status', None)
-            if status:
-                if isinstance(status, UserStatusOnline):
-                    self.activity_status = "在线"
-                    self.last_seen = datetime.now()
-                elif isinstance(status, UserStatusRecently):
-                    self.activity_status = "最近在线"
-                    self.last_seen = datetime.now() - timedelta(days=1)
-                elif isinstance(status, UserStatusLastWeek):
-                    self.activity_status = "一周内在线"
-                    self.last_seen = datetime.now() - timedelta(days=7)
-                elif isinstance(status, UserStatusLastMonth):
-                    self.activity_status = "一月内在线"
-                    self.last_seen = datetime.now() - timedelta(days=30)
-                elif isinstance(status, UserStatusOffline) and status.was_online:
-                    self.activity_status = "离线"
-                    try:
-                        self.last_seen = datetime.fromtimestamp(status.was_online.timestamp())
-                    except:
-                        self.last_seen = None
-                else:
-                    self.activity_status = "很久未在线"
-            else:
-                self.activity_status = "未知"
-                
-    def to_dict(self):
-        """将对象转换为字典用于JSON序列化"""
-        return {
-            'phone_number': self.phone_number,
-            'user_id': self.user_id,
-            'last_seen': self.last_seen.isoformat() if self.last_seen else None,
-            'activity_status': self.activity_status,
-            'check_time': self.check_time.isoformat() if self.check_time else None,
-            'username': self.username,
-            'first_name': self.first_name,
-            'last_name': self.last_name,
-            'is_premium': self.is_premium,
-            'is_bot': self.is_bot,
-            'is_verified': self.is_verified
-        }
-        
-    @classmethod
-    def from_dict(cls, data):
-        """从字典创建对象"""
-        status = cls(data['phone_number'], data.get('user_id'))
-        status.activity_status = data.get('activity_status', "未知")
-        if data.get('last_seen'):
-            try:
-                status.last_seen = datetime.fromisoformat(data['last_seen'])
-            except:
-                status.last_seen = None
-                
-        if data.get('check_time'):
-            try:
-                status.check_time = datetime.fromisoformat(data['check_time'])
-            except:
-                status.check_time = None
-                
-        status.username = data.get('username')
-        status.first_name = data.get('first_name')
-        status.last_name = data.get('last_name')
-        status.is_premium = data.get('is_premium', False)
-        status.is_bot = data.get('is_bot', False)
-        status.is_verified = data.get('is_verified', False)
-        return status
-    
-    @property
-    def display_name(self):
-        """获取显示名称"""
-        return self.phone_number
-            
-    @property
-    def is_active(self):
-        """检查用户是否活跃"""
-        return self.activity_status in ["在线", "最近在线", "一周内在线"]
-    
-    @property
-    def status_color(self):
-        """根据活跃状态返回颜色"""
-        status_colors = {
-            "在线": "#4CAF50",  # 绿色
-            "最近在线": "#8BC34A",  # 浅绿色
-            "一周内在线": "#FFC107",  # 黄色
-            "一月内在线": "#FF9800",  # 橙色
-            "离线": "#9E9E9E",  # 灰色
-            "很久未在线": "#F44336",  # 红色
-            "未知": "#607D8B"   # 蓝灰色
-        }
-        return status_colors.get(self.activity_status, "#607D8B")
-
-class CheckThread(QThread):
-    log_signal = pyqtSignal(str)
-    progress_signal = pyqtSignal(int, int)
-    session_status_signal = pyqtSignal(str, str, str)
-    check_complete_signal = pyqtSignal(list)
-
-    def __init__(self, phone_numbers, sessions, parent=None):
-        super().__init__(parent)
-        self.phone_numbers = phone_numbers
-        self.sessions = sessions  # SessionStatus对象列表
-        self.is_running = True
-        self.parent = parent  # 保存父对象引用
-        self.batch_size = 5000  # 最大内存中处理数量
-        self.processed_numbers = set()  # 已处理的号码
-        self.registered_numbers = []  # 已注册的号码
-
-    async def check_numbers(self):
-        try:
-            self.log_signal.emit("【初始化】开始筛选号码初始化...")
-            total = len(self.phone_numbers)
-            checked = 0
-
-            # 检查所有session的可用性
-            available_sessions = []
-            api_id = self.parent.config.getint('API', 'api_id', fallback=2040)
-            api_hash = self.parent.config.get('API', 'api_hash', fallback='b18441a1ff607e10a989891a5462e627')
-
-            # 初始化时分批检查session，避免同时连接过多账号
-            session_batches = [self.sessions[i:i + 10] for i in range(0, len(self.sessions), 10)]
-            
-            for batch_idx, batch in enumerate(session_batches):
-                self.log_signal.emit(f"【初始化】检查会话批次 {batch_idx+1}/{len(session_batches)}...")
-                batch_tasks = []
-                for session in batch:
-                    # 创建初始化任务
-                    batch_tasks.append(self.initialize_session(session, api_id, api_hash))
-                
-                # 并行执行当前批次的初始化任务
-                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-                
-                # 处理结果
-                for session, result in zip(batch, batch_results):
-                    if isinstance(result, Exception):
-                        # 处理异常情况
-                        error_msg = f"Session {session.name} 初始化失败: {str(result)}"
-                        self.log_signal.emit(f"【初始化失败】{error_msg}")
-                        session.add_error(error_msg)
-                        session.status = "错误"
-                        self.session_status_signal.emit(session.file_path, "错误", error_msg)
-                    elif result:  # 成功初始化的session
-                        available_sessions.append(session)
-                        self.log_signal.emit(f"【初始化成功】{session.name} 可用")
-                
-                # 在批次之间短暂休息，避免对服务器造成过大压力
-                await asyncio.sleep(0.5)
-
-            # 检查是否有可用的session
-            if not available_sessions:
-                error_msg = "错误：没有可用的Session"
-                self.log_signal.emit(f"【严重错误】{error_msg}")
-                # 更新所有session的错误状态
-                for session in self.sessions:
-                    if session.status not in ["未授权", "错误"]:
-                        session.add_error("初始化后不可用")
-                return []
-
-            # 开始检查号码
-            # 将号码分成较小的批次，避免内存占用过大
-            self.log_signal.emit(f"【开始检测】准备检测 {total} 个号码是否注册...")
-            
-            # 使用生成器来处理大量号码，避免一次性加载全部到内存
-            def phone_number_generator():
-                for i in range(0, len(self.phone_numbers), self.batch_size):
-                    if not self.is_running:
-                        break
-                    # 返回当前批次，并过滤掉已处理的号码
-                    batch = [p for p in self.phone_numbers[i:i+self.batch_size] if p not in self.processed_numbers]
-                    if batch:  # 只在有未处理号码时才返回批次
-                        yield batch
-            
-            # 每个批次的处理函数
-            async def process_batch(batch):
-                nonlocal checked
-                current_phones = batch.copy()
-                batch_registered = []
-                
-                # 循环使用有效会话处理这一批号码
-                while current_phones and self.is_running:
-                    for session in available_sessions:
-                        if not self.is_running or not current_phones:
-                            break
-
-                        if not session.can_use():
-                            continue
-
-                        # 从当前批次获取号码
-                        session_batch_size = min(session.batch_size, len(current_phones))
-                        current_batch = current_phones[:session_batch_size]
-                        current_phones = current_phones[session_batch_size:]
-
-                        # 标记这些号码为已处理
-                        self.processed_numbers.update(current_batch)
-
-                        try:
-                            client = TelegramClient(session.file_path, api_id, api_hash)
-                            await client.connect()
-
-                            if not await client.is_user_authorized():
-                                error_msg = f"Session {session.name} 检查时未授权"
-                                self.log_signal.emit(f"【授权错误】{error_msg}")
-                                session.add_error(error_msg)
-                                session.status = "未授权"
-                                self.session_status_signal.emit(session.file_path, "未授权", error_msg)
-                                current_phones.extend(current_batch)  # 将号码放回队列
-                                self.processed_numbers.difference_update(current_batch)  # 从已处理中移除
-                                continue
-
-                            session.status = "正在运行"
-                            self.session_status_signal.emit(session.file_path, "正在运行", "")
-                            self.log_signal.emit(f"【使用会话】使用 {session.name} 检查号码批次: {len(current_batch)} 个，批量大小: {session_batch_size}")
-
-                            # 添加每个号码的检测日志（最多显示前5个）
-                            if len(current_batch) > 0:
-                                display_nums = current_batch[:min(5, len(current_batch))]
-                                for phone in display_nums:
-                                    self.log_signal.emit(f"【检测号码】检测: {phone}")
-                                if len(current_batch) > 5:
-                                    self.log_signal.emit(f"【检测号码】... 以及其他 {len(current_batch) - 5} 个号码")
-                            
-                            # 为客户端添加日志处理器
-                            client._log_handler = lambda msg: self.log_signal.emit(msg)
-
-                            result = await check_phone_numbers(client, current_batch)
-                            if result:
-                                batch_registered.extend(result)
-                                self.log_signal.emit(f"【发现注册】发现已注册号码: {len(result)} 个")
-
-                            checked += len(current_batch)
-                            self.progress_signal.emit(checked, total)
-                            session.status = "空闲"
-                            session.last_used = time.time()
-                            session.total_checks += 1
-                            self.session_status_signal.emit(session.file_path, "空闲", "")
-                            
-                            # 添加冷却状态的日志
-                            self.log_signal.emit(f"【进入冷却】{session.name} 进入冷却状态，冷却时间: {session.cooldown_time}秒")
-
-                        except Exception as e:
-                            error_msg = f"Session {session.name} 检查出错: {str(e)}"
-                            self.log_signal.emit(f"【检查错误】{error_msg}")
-                            session.add_error(error_msg)
-                            session.status = "错误"
-                            self.session_status_signal.emit(session.file_path, "错误", error_msg)
-                            current_phones.extend(current_batch)  # 将号码放回队列
-                            self.processed_numbers.difference_update(current_batch)  # 从已处理中移除
-                        finally:
-                            try:
-                                await client.disconnect()
-                            except:
-                                pass
-
-                        # 等待冷却时间
-                        if self.is_running and current_phones and session.cooldown_time > 0:
-                            await asyncio.sleep(3)  # 基础等待时间
-
-                    # 如果所有session都不可用，等待一段时间
-                    if current_phones and self.is_running:
-                        # 计算最短冷却时间
-                        min_cooldown = min([s.cooldown_time for s in available_sessions if s.cooldown_time > 0], default=180)
-                        self.log_signal.emit(f"【等待冷却】所有session正在冷却中，需等待 {min_cooldown} 秒后继续...")
-                        
-                        # 循环等待直到有session可用
-                        wait_started = time.time()  # 记录开始等待的时间
-                        
-                        while self.is_running and current_phones:
-                            # 检查是否有可用session
-                            found_available = False
-                            for s in available_sessions:
-                                if s.can_use():
-                                    self.log_signal.emit(f"【会话可用】{s.name} 已冷却完毕，继续检测")
-                                    found_available = True
-                                    break
-                            
-                            if found_available:
-                                break  # 找到可用session，跳出等待循环
-                                
-                            # 计算已等待时间
-                            wait_time = time.time() - wait_started
-                            
-                            # 每15秒提示一次，减少日志频率
-                            if int(wait_time) % 15 == 0 and int(wait_time) > 0:
-                                remaining = max(0, min_cooldown - wait_time)
-                                self.log_signal.emit(f"【等待中】已等待 {int(wait_time)} 秒，预计还需 {int(remaining)} 秒...")
-                            
-                            # 短暂休眠，避免CPU占用过高
-                            await asyncio.sleep(1)
-                
-                return batch_registered
-            
-            # 处理所有批次
-            for batch_idx, phone_batch in enumerate(phone_number_generator()):
-                if not self.is_running:
-                    break
-                
-                self.log_signal.emit(f"【开始批次】批次 {batch_idx+1}，大小: {len(phone_batch)} 个号码")
-                batch_result = await process_batch(phone_batch)
-                self.registered_numbers.extend(batch_result)
-                
-                # 每批次完成后释放内存
-                import gc
-                gc.collect()
-
-            return self.registered_numbers
-
-        except Exception as e:
-            error_msg = f"检测线程发生错误: {str(e)}"
-            self.log_signal.emit(f"【线程错误】{error_msg}")
-            return []
-
-    async def initialize_session(self, session, api_id, api_hash):
-        """初始化单个session并检查其可用性"""
-        try:
-            # 创建客户端并尝试连接
-            client = TelegramClient(session.file_path, api_id, api_hash)
-            await client.connect()
-
-            if not await client.is_user_authorized():
-                error_msg = f"Session {session.name} 未授权"
-                self.log_signal.emit(f"【授权错误】{error_msg}")
-                session.add_error(error_msg)
-                session.status = "未授权"
-                self.session_status_signal.emit(session.file_path, "未授权", error_msg)
-                await client.disconnect()
-                return False
-
-            # 验证成功
-            session.status = "空闲"
-            await client.disconnect()
-            return True
-
-        except Exception as e:
-            # 让异常传播到上层处理
-            raise e
-    
-    def run(self):
-        """运行检查线程"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            registered_numbers = loop.run_until_complete(self.check_numbers())
-            self.check_complete_signal.emit(registered_numbers)
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            error_msg = f"【线程错误】筛选号码线程错误: {str(e)}\n详细信息:\n{error_details}"
-            self.log_signal.emit(error_msg)
-            # 确保发送一个有效的信号，即使发生了错误
-            self.check_complete_signal.emit([])  # 发送空结果
-        finally:
-            try:
-                loop.close()
-            except Exception as close_error:
-                self.log_signal.emit(f"【关闭错误】关闭事件循环时出错: {str(close_error)}")
-                
-    def stop(self):
-        """停止检查"""
-        try:
-            self.is_running = False
-            self.log_signal.emit("【停止信号】正在结束当前检测批次...")
-        except Exception as e:
-            self.log_signal.emit(f"【停止错误】停止过程中出错: {str(e)}")
 
 class TelegramGUI(QMainWindow):
     def __init__(self):
@@ -2250,25 +1641,28 @@ class TelegramGUI(QMainWindow):
                 QMessageBox.warning(self, '警告', '请先添加要检查的号码！')
                 return
 
-            # 清空状态文本框
-            self.status_text.clear()
-            self.log("开始检测...")
+            dialog = SendMessageDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                message = dialog.get_message()
+                # 清空状态文本框
+                self.status_text.clear()
+                self.log("开始检测...")
 
-            # 更新UI状态
-            self.start_btn.setEnabled(False)
-            self.check_activity_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
+                # 更新UI状态
+                self.start_btn.setEnabled(False)
+                self.check_activity_btn.setEnabled(False)
+                self.stop_btn.setEnabled(True)
 
-            # 创建并启动检查线程
-            self.check_thread = CheckThread(
-                self.phone_numbers.copy(), self.sessions, self)
-            self.check_thread.log_signal.connect(self.log)
-            self.check_thread.progress_signal.connect(self.update_progress)
-            self.check_thread.session_status_signal.connect(
-                self.update_session_status)
-            self.check_thread.check_complete_signal.connect(
-                self.check_completed)
-            self.check_thread.start()
+                # 创建并启动检查线程
+                self.check_thread = CheckThread(
+                    self.phone_numbers.copy(), message, self.sessions, self)
+                self.check_thread.log_signal.connect(self.log)
+                self.check_thread.progress_signal.connect(self.update_progress)
+                self.check_thread.session_status_signal.connect(
+                    self.update_session_status)
+                self.check_thread.check_complete_signal.connect(
+                    self.check_completed)
+                self.check_thread.start()
         except Exception as e:
             import traceback
             error_msg = f"启动筛选检测时出错: {str(e)}\n{traceback.format_exc()}"
@@ -2882,545 +2276,6 @@ class TelegramGUI(QMainWindow):
         super().closeEvent(event)
 
 
-class PhoneNumberImportThread(QThread):
-    """用于后台导入大量号码的线程"""
-    progress_signal = pyqtSignal(int, int)  # 当前进度, 总数
-    result_signal = pyqtSignal(list)  # 处理完成的号码列表
-    log_signal = pyqtSignal(str)  # 日志信息
-
-    def __init__(self, file_path=None, text_content=None, existing_numbers=None, registered_numbers=None):
-        super().__init__()
-        self.file_path = file_path
-        self.text_content = text_content
-        self.existing_numbers = set(existing_numbers or [])
-        self.registered_numbers = set(registered_numbers or [])
-        self.is_running = True
-
-    def normalize_phone_number(self, number):
-        """统一号码格式,移除所有非数字字符"""
-        # 提取所有数字
-        digits = ''.join(filter(str.isdigit, number))
-
-        # 如果第一位是1且总长度大于10,认为是带国家代码的号码
-        if digits.startswith('1') and len(digits) > 10:
-            return '+' + digits
-        # 如果长度大于10但不以1开头,可能是其他国家号码
-        elif len(digits) > 10:
-            return '+' + digits
-        # 如果只有10位,默认添加+1
-        elif len(digits) == 10:
-            return '+1' + digits
-        else:
-            return '+' + digits
-
-    def run(self):
-        """在后台处理号码"""
-        try:
-            all_numbers = []
-            processed_count = 0
-            batch_size = 10000  # 每批处理的号码数量
-
-            # 根据输入来源获取号码
-            if self.file_path:
-                # 从文件读取号码
-                try:
-                    with open(self.file_path, 'r', encoding='utf-8') as f:
-                        content = f.readlines()
-                except UnicodeDecodeError:
-                    # 尝试其他编码
-                    with open(self.file_path, 'r', encoding='latin-1') as f:
-                        content = f.readlines()
-
-                total_lines = len(content)
-                self.log_signal.emit(f"开始处理文件中的 {total_lines} 行内容...")
-
-                # 处理文件中的每一行
-                for i, line in enumerate(content):
-                    if not self.is_running:
-                        break
-
-                    # 清理行并提取号码
-                    numbers_in_line = line.strip().split()
-                    for number in numbers_in_line:
-                        if number:
-                            normalized = self.normalize_phone_number(number)
-                            # 检查是否已经存在或已注册
-                            if normalized not in self.existing_numbers and normalized not in self.registered_numbers:
-                                all_numbers.append(normalized)
-
-                    processed_count += 1
-                    # 每处理1000行更新一次进度
-                    if processed_count % 1000 == 0 or processed_count == total_lines:
-                        self.progress_signal.emit(processed_count, total_lines)
-
-            elif self.text_content:
-                # 从文本内容处理号码
-                lines = self.text_content.split('\n')
-                total_lines = len(lines)
-                self.log_signal.emit(f"开始处理输入的 {total_lines} 行文本...")
-
-                # 处理每一行
-                for i, line in enumerate(lines):
-                    if not self.is_running:
-                        break
-
-                    # 清理行并提取号码
-                    if line.strip():
-                        normalized = self.normalize_phone_number(line.strip())
-                        # 检查是否已经存在或已注册
-                        if normalized not in self.existing_numbers and normalized not in self.registered_numbers:
-                            all_numbers.append(normalized)
-
-                    processed_count += 1
-                    # 每处理1000行更新一次进度
-                    if processed_count % 1000 == 0 or processed_count == total_lines:
-                        self.progress_signal.emit(processed_count, total_lines)
-
-            # 最终结果
-            if self.is_running:
-                self.log_signal.emit(f"处理完成，共找到 {len(all_numbers)} 个有效号码")
-                self.result_signal.emit(all_numbers)
-            else:
-                self.log_signal.emit("导入操作被取消")
-
-        except Exception as e:
-            self.log_signal.emit(f"导入过程出错: {str(e)}")
-            self.result_signal.emit([])
-
-    def stop(self):
-        """停止处理"""
-        self.is_running = False
-
-
-class NumbersListWidget(QTextEdit):
-    """优化的号码列表显示组件，支持高效显示大量号码"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setReadOnly(True)
-        self.numbers = []
-        self.display_limit = 1000  # 最大显示数量
-
-    def set_numbers(self, numbers):
-        """设置号码列表并更新显示"""
-        self.numbers = numbers
-        self.update_display()
-
-    def update_display(self):
-        """更新显示内容，只显示有限数量的号码"""
-        self.clear()
-
-        total = len(self.numbers)
-        display_count = min(total, self.display_limit)
-
-        # 显示号码
-        if display_count > 0:
-            text = "\n".join(self.numbers[:display_count])
-            if total > display_count:
-                text += f"\n...\n(仅显示前 {display_count} 个，共 {total} 个号码)"
-            else:
-                text += f"\n\n共 {total} 个号码"
-            self.setText(text)
-        else:
-            self.setText("没有号码")
-
-
-class ActivityCheckThread(QThread):
-    """用于检查用户活跃度的线程类"""
-    log_signal = pyqtSignal(str)
-    progress_signal = pyqtSignal(int, int)
-    session_status_signal = pyqtSignal(str, str, str)
-    check_complete_signal = pyqtSignal(list)
-
-    def __init__(self, phone_numbers, sessions, parent=None, active_days=30):
-        super().__init__(parent)
-        self.phone_numbers = phone_numbers
-        self.sessions = sessions  # SessionStatus对象列表
-        self.is_running = True
-        self.parent = parent  # 保存父对象引用
-        self.active_days = active_days  # 活跃天数阈值
-        self.activity_results = []  # 存储活跃度检测结果
-
-        # 从配置文件获取批量大小设置
-        self.batch_size = 5000  # 默认内存中处理数量
-        if parent and hasattr(parent, 'config'):
-            memory_batch_size = parent.config.getint(
-                'Settings', 'memory_batch_size', fallback=5000)
-            self.batch_size = memory_batch_size
-
-        self.processed_numbers = set()  # 已处理的号码
-
-    async def check_user_activity(self, client, phone_numbers):
-        """检查用户活跃度状态"""
-        results = []
-        processed_phones = set()  # 用于跟踪已处理的号码
-
-        for phone in phone_numbers:
-            if not self.is_running:
-                break
-
-            # 如果号码已经处理过，跳过
-            if phone in processed_phones:
-                continue
-
-            processed_phones.add(phone)
-
-            try:
-                # 创建UserActivityStatus对象
-                activity_status = UserActivityStatus(phone)
-
-                # 尝试通过手机号获取用户信息
-                try:
-                    contact = InputPhoneContact(
-                        client_id=0, phone=phone, first_name="", last_name="")
-                    contacts_result = await client(ImportContactsRequest([contact]))
-
-                    if contacts_result and contacts_result.users:
-                        user = contacts_result.users[0]
-                        user_id = user.id
-
-                        # 使用GetFullUserRequest获取详细用户信息
-                        try:
-                            full_user = await client(functions.users.GetFullUserRequest(id=user))
-                            user = full_user.user if hasattr(
-                                full_user, 'user') else user
-
-                            # 更新用户活跃度状态
-                            activity_status.update_from_user(user)
-
-                            # 正确获取用户名和姓名
-                            activity_status.username = user.username if hasattr(
-                                user, 'username') and user.username else ""
-                            activity_status.first_name = user.first_name if hasattr(
-                                user, 'first_name') and user.first_name else ""
-                            activity_status.last_name = user.last_name if hasattr(
-                                user, 'last_name') and user.last_name else ""
-
-                            self.log_signal.emit(
-                                f"【活跃度-状态】{phone} - {activity_status.activity_status}")
-                            results.append(activity_status)
-                        except Exception as e:
-                            self.log_signal.emit(
-                                f"【活跃度-获取失败】{phone} 获取详细信息失败: {str(e)}")
-                            activity_status.activity_status = "检测失败"
-                            results.append(activity_status)
-                    else:
-                        activity_status.activity_status = "未注册"
-                        self.log_signal.emit(f"【活跃度-未注册】{phone} 未注册Telegram")
-                        results.append(activity_status)
-
-                except Exception as e:
-                    self.log_signal.emit(
-                        f"【活跃度-获取失败】{phone} 用户信息获取失败: {str(e)}")
-                    activity_status.activity_status = "检测失败"
-                    results.append(activity_status)
-
-                # 短暂延迟，避免API限制
-                await asyncio.sleep(0.5)
-
-            except Exception as e:
-                self.log_signal.emit(f"【活跃度-检测出错】{phone} 活跃度检测出错: {str(e)}")
-                activity_status = UserActivityStatus(phone)
-                activity_status.activity_status = "检测出错"
-                results.append(activity_status)
-
-        return results
-
-    async def check_activity(self):
-        """检查所有用户活跃度的主函数"""
-        try:
-            self.log_signal.emit("【初始化】开始活跃度检测初始化...")
-            total = len(self.phone_numbers)
-            checked = 0
-            all_results = []
-
-            # 初始化检查API限制进度
-            self.progress_signal.emit(0, total)
-
-            # 检查所有session的可用性
-            available_sessions = []
-            api_id = self.parent.config.getint('API', 'api_id', fallback=2040)
-            api_hash = self.parent.config.get(
-                'API', 'api_hash', fallback='b18441a1ff607e10a989891a5462e627')
-
-            # 初始化时分批检查session，避免同时连接过多账号
-            session_batches = [self.sessions[i:i + 5]
-                               for i in range(0, len(self.sessions), 5)]
-
-            for batch_idx, batch in enumerate(session_batches):
-                self.log_signal.emit(
-                    f"【初始化】检查会话批次 {batch_idx+1}/{len(session_batches)}...")
-                batch_tasks = []
-                for session in batch:
-                    # 创建初始化任务，复用CheckThread的初始化方法
-                    batch_tasks.append(self.initialize_session(
-                        session, api_id, api_hash))
-
-                # 并行执行当前批次的初始化任务
-                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-                # 处理结果
-                for session, result in zip(batch, batch_results):
-                    if isinstance(result, Exception):
-                        # 处理异常情况
-                        error_msg = f"Session {session.name} 初始化失败: {str(result)}"
-                        self.log_signal.emit(f"【初始化失败】{error_msg}")
-                        session.add_error(error_msg)
-                        session.status = "错误"
-                        self.session_status_signal.emit(
-                            session.file_path, "错误", error_msg)
-                    elif result:  # 成功初始化的session
-                        available_sessions.append(session)
-                        self.log_signal.emit(f"【初始化成功】{session.name} 可用")
-
-                # 在批次之间短暂休息，避免对服务器造成过大压力
-                await asyncio.sleep(1)
-
-            # 检查是否有可用的session
-            if not available_sessions:
-                error_msg = "错误：没有可用的Session"
-                self.log_signal.emit(f"【严重错误】{error_msg}")
-                return []
-
-            # 开始检查号码活跃度 - 使用生成器和批处理机制
-            self.log_signal.emit(f"【开始检测】准备检测 {total} 个号码活跃度...")
-
-            # 生成器函数，返回未处理的号码批次
-            def phone_batch_generator():
-                for i in range(0, total, self.batch_size):
-                    if not self.is_running:
-                        break
-                    # 过滤已处理的号码
-                    batch = [p for p in self.phone_numbers[i:i +
-                                                           self.batch_size] if p not in self.processed_numbers]
-                    if batch:  # 只在有未处理号码时才返回
-                        yield batch
-
-            # 处理单个批次的函数
-            async def process_batch(phone_batch):
-                nonlocal checked
-                batch_results = []
-                current_phones = phone_batch.copy()  # 创建一个副本用于处理
-
-                # 处理这一批中的所有号码
-                while current_phones and self.is_running:
-                    # 选择一个可用的session
-                    session = None
-                    for s in available_sessions:
-                        if s.can_use():
-                            session = s
-                            break
-
-                    if not session:
-                        # 等待冷却
-                        # 计算最短冷却时间
-                        min_cooldown = min(
-                            [s.cooldown_time for s in available_sessions if s.cooldown_time > 0], default=180)
-                        self.log_signal.emit(
-                            f"【等待冷却】所有session正在冷却中，需等待 {min_cooldown} 秒后继续...")
-
-                        # 循环等待直到有session可用
-                        wait_started = time.time()  # 记录开始等待的时间
-
-                        while self.is_running:
-                            # 检查是否有可用session
-                            found_available = False
-                            for s in available_sessions:
-                                if s.can_use():
-                                    session = s
-                                    self.log_signal.emit(
-                                        f"【会话可用】{s.name} 已冷却完毕，继续检测")
-                                    found_available = True
-                                    break
-
-                            if found_available:
-                                break  # 找到可用session，跳出等待循环
-
-                            # 计算已等待时间
-                            wait_time = time.time() - wait_started
-
-                            # 每15秒提示一次，减少日志频率
-                            if int(wait_time) % 15 == 0 and int(wait_time) > 0:
-                                remaining = max(0, min_cooldown - wait_time)
-                                self.log_signal.emit(
-                                    f"【等待中】已等待 {int(wait_time)} 秒，预计还需 {int(remaining)} 秒...")
-
-                            # 短暂休眠，避免CPU占用过高
-                            await asyncio.sleep(1)
-
-                        # 如果still没有找到可用session但用户中断了运行
-                        if not session:
-                            self.log_signal.emit("【等待中断】等待被用户中断，跳过当前批次")
-                            break
-
-                    try:
-                        # 根据当前会话的批量大小获取要处理的号码
-                        current_batch_size = session.batch_size
-                        # 从当前批次获取号码
-                        current_batch = current_phones[:current_batch_size]
-                        current_phones = current_phones[current_batch_size:]
-
-                        self.log_signal.emit(
-                            f"【使用会话】使用 {session.name} 处理 {len(current_batch)} 个号码，批量大小: {current_batch_size}")
-
-                        client = TelegramClient(
-                            session.file_path, api_id, api_hash)
-                        await client.connect()
-
-                        if not await client.is_user_authorized():
-                            error_msg = f"Session {session.name} 未授权"
-                            self.log_signal.emit(f"【授权错误】{error_msg}")
-                            session.add_error(error_msg)
-                            session.status = "未授权"
-                            self.session_status_signal.emit(
-                                session.file_path, "未授权", error_msg)
-                            # 将号码放回队列以便其他会话处理
-                            current_phones = current_batch + current_phones
-                            continue
-
-                        session.status = "正在运行"
-                        self.session_status_signal.emit(
-                            session.file_path, "正在运行", "")
-
-                        # 标记这些号码为已处理
-                        self.processed_numbers.update(current_batch)
-
-                        # 检测活跃度
-                        mini_results = await self.check_user_activity(client, current_batch)
-                        batch_results.extend(mini_results)
-
-                        # 更新进度
-                        checked += len(current_batch)
-                        self.progress_signal.emit(checked, total)
-
-                        # 更新session状态
-                        session.status = "空闲"
-                        session.last_used = time.time()
-                        session.total_checks += 1
-                        self.session_status_signal.emit(
-                            session.file_path, "空闲", "")
-
-                        # 添加冷却状态的日志
-                        self.log_signal.emit(
-                            f"【进入冷却】{session.name} 进入冷却状态，冷却时间: {session.cooldown_time}秒")
-
-                        # 避免API限制 - 使用session的冷却时间设置
-                        if session.cooldown_time > 0:
-                            # 使用冷却时间的1/10，但最多3秒
-                            await asyncio.sleep(min(session.cooldown_time/10, 3))
-
-                    except Exception as e:
-                        error_msg = f"Session {session.name} 检查出错: {str(e)}"
-                        self.log_signal.emit(f"【检查错误】{error_msg}")
-                        session.add_error(error_msg)
-                        session.status = "错误"
-                        self.session_status_signal.emit(
-                            session.file_path, "错误", error_msg)
-
-                        # 将号码放回队列以便其他会话处理
-                        current_phones = current_batch + current_phones
-
-                    finally:
-                        try:
-                            await client.disconnect()
-                        except:
-                            pass
-
-                # 强制释放内存
-                import gc
-                gc.collect()
-
-                return batch_results
-
-            # 处理所有批次
-            for batch_idx, phone_batch in enumerate(phone_batch_generator()):
-                if not self.is_running:
-                    break
-
-                self.log_signal.emit(
-                    f"【开始批次】批次 {batch_idx+1}，大小: {len(phone_batch)} 个号码")
-                batch_results = await process_batch(phone_batch)
-                all_results.extend(batch_results)
-
-                # 批次间休息
-                if self.is_running and batch_idx < len(self.phone_numbers) // self.batch_size:
-                    self.log_signal.emit(f"【批次完成】已完成批次 {batch_idx+1}，休息片刻...")
-                    await asyncio.sleep(5)
-
-            return all_results
-
-        except Exception as e:
-            error_msg = f"活跃度检测线程发生错误: {str(e)}"
-            self.log_signal.emit(f"【线程错误】{error_msg}")
-            return []
-
-    async def initialize_session(self, session, api_id, api_hash):
-        """初始化单个session并检查其可用性"""
-        try:
-            # 创建客户端并尝试连接
-            client = TelegramClient(session.file_path, api_id, api_hash)
-            await client.connect()
-
-            if not await client.is_user_authorized():
-                error_msg = f"Session {session.name} 未授权"
-                self.log_signal.emit(f"【授权错误】{error_msg}")
-                session.add_error(error_msg)
-                session.status = "未授权"
-                self.session_status_signal.emit(
-                    session.file_path, "未授权", error_msg)
-                await client.disconnect()
-                return False
-
-            # 验证成功
-            session.status = "空闲"
-            await client.disconnect()
-            return True
-
-        except Exception as e:
-            # 让异常传播到上层处理
-            raise e
-
-    def progress_signal_handler(self, checked, total):
-        """处理进度信号，以更新进度显示"""
-        progress = (checked / total) * 100 if total > 0 else 0
-
-        # 只在整数百分比变化时输出日志，减少过多的输出
-        if int(progress) % 5 == 0 or checked == total or checked == 1:
-            self.log_signal.emit(
-                f"【活跃度-进度】已检测: {checked}/{total} ({progress:.1f}%)")
-
-    def run(self):
-        """运行活跃度检测线程"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            # 连接进度信号处理器
-            self.progress_signal.connect(self.progress_signal_handler)
-
-            activity_results = loop.run_until_complete(self.check_activity())
-            self.activity_results = activity_results
-            self.check_complete_signal.emit(activity_results)
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            error_msg = f"【线程错误】活跃度检测线程错误: {str(e)}\n详细信息:\n{error_details}"
-            self.log_signal.emit(error_msg)
-            self.check_complete_signal.emit([])  # 发送空结果
-        finally:
-            try:
-                loop.close()
-            except Exception as close_error:
-                self.log_signal.emit(f"【关闭错误】关闭事件循环时出错: {str(close_error)}")
-
-    def stop(self):
-        """停止检查"""
-        try:
-            self.is_running = False
-            self.log_signal.emit("【停止信号】正在结束当前检测批次...")
-        except Exception as e:
-            self.log_signal.emit(f"【停止错误】停止过程中出错: {str(e)}")
-
-
 if __name__ == '__main__':
     # 添加全局异常处理器
     import traceback
@@ -3531,41 +2386,43 @@ if __name__ == '__main__':
                 painter.setFont(title_font)
                 painter.drawText(QRect(0, 40, self.width(), 40),
                                  Qt.AlignCenter, "Telegram消息工具")
-                
+
                 # 副标题/版本
                 painter.setPen(QPen(QColor("#BBDEFB"), 1))
                 subtitle_font = QFont("Arial", 10)
                 painter.setFont(subtitle_font)
-                painter.drawText(QRect(0, 80, self.width(), 20), Qt.AlignCenter, "版本 1.0.1")
-                
+                painter.drawText(QRect(0, 80, self.width(), 20),
+                                 Qt.AlignCenter, "版本 1.0.1")
+
                 # 加载文本
                 text_font = QFont("Arial", 11)
                 painter.setFont(text_font)
                 painter.setPen(QPen(QColor("#E3F2FD"), 1))
-                painter.drawText(QRect(0, 150, self.width(), 30), Qt.AlignCenter, 
-                                self.loading_texts[self.current_text_index])
-                
+                painter.drawText(QRect(0, 150, self.width(), 30), Qt.AlignCenter,
+                                 self.loading_texts[self.current_text_index])
+
                 # 进度条背景
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(QColor(60, 60, 60, 150))
                 painter.drawRoundedRect(50, 200, 300, 15, 7, 7)
-                
+
                 # 进度条
                 painter.setBrush(QColor("#4CAF50"))
                 progress_width = int(300 * (self.progress / 100))
                 painter.drawRoundedRect(50, 200, progress_width, 15, 7, 7)
-                
+
                 # 版权信息
                 copyright_font = QFont("Arial", 8)
                 painter.setFont(copyright_font)
                 painter.setPen(QPen(QColor("#78909C"), 1))
-                painter.drawText(QRect(0, 250, self.width(), 20), Qt.AlignCenter, "© 2025 乔法克斯 版权所有")
-        
+                painter.drawText(QRect(0, 250, self.width(), 20),
+                                 Qt.AlignCenter, "© 2025 乔法克斯 版权所有")
+
         # 创建启动屏幕
         splash = CustomSplashScreen()
         splash.show()
         app.processEvents()  # 确保启动画面显示
-        
+
         # 使用定时器延迟加载主窗口
         def show_main_window():
             global gui
@@ -3578,23 +2435,23 @@ if __name__ == '__main__':
                 print(f"创建主窗口时出错: {str(e)}\n{traceback.format_exc()}")
                 if splash and splash.isVisible():
                     splash.hide()
-                QMessageBox.critical(None, "启动错误", 
-                                  f"启动程序时出错:\n\n{str(e)}")
+                QMessageBox.critical(None, "启动错误",
+                                     f"启动程序时出错:\n\n{str(e)}")
                 sys.exit(1)
-        
+
         # 延时1.5秒后显示主窗口
         QTimer.singleShot(1500, show_main_window)
-        
+
         sys.exit(app.exec_())
-        
+
     except Exception as startup_error:
         # 如果在启动过程中发生任何错误，显示错误消息框
         print(f"启动错误: {str(startup_error)}\n{traceback.format_exc()}")
         try:
             if app:
-                QMessageBox.critical(None, "启动错误", 
-                                 f"程序启动失败:\n\n{str(startup_error)}")
+                QMessageBox.critical(None, "启动错误",
+                                     f"程序启动失败:\n\n{str(startup_error)}")
         except:
             pass
-            
-        sys.exit(1) 
+
+        sys.exit(1)

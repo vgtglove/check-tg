@@ -396,3 +396,54 @@ class ActivityResultDialog(QDialog):
         layout.addWidget(stats_panel)
         layout.addLayout(buttons_layout)
         self.setLayout(layout)
+
+# SendMessageDialog
+
+
+class SendMessageDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("发送消息")
+        self.setFixedSize(400, 250)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: white;
+            }
+            QLabel {
+                color: #424242;
+            }
+            QTextEdit {
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                background-color: #F5F5F5;
+            }
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 15px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        layout = QVBoxLayout()
+        label = QLabel("请输入要发送的消息：")
+        layout.addWidget(label)
+        self.message_edit = QTextEdit()
+        self.message_edit.setPlaceholderText("在此输入消息内容...")
+        layout.addWidget(self.message_edit)
+        btn_layout = QHBoxLayout()
+        send_btn = QPushButton("发送")
+        send_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(send_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def get_message(self):
+        return self.message_edit.toPlainText().strip()
