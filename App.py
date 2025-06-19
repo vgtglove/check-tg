@@ -2334,11 +2334,12 @@ class TelegramGUI(QMainWindow):
 
         # 开始检查按钮
         self.start_btn = create_control_button(
-            "start", "开始检查",
+            "start", "开始发送",
             "开始检测已添加的号码\n请确保有可用的会话且已添加号码",
             "#4CAF50"
         )
-        self.start_btn.clicked.connect(self.start_check)
+        # self.start_btn.clicked.connect(self.start_check)
+        self.start_btn.clicked.connect(self.start_msg)
 
         # 检测活跃度按钮
         self.check_activity_btn = create_control_button(
@@ -3244,53 +3245,47 @@ class TelegramGUI(QMainWindow):
         # 确保立即更新显示
         QApplication.processEvents()
 
-        
     def start_msg(self):
-        try:
-            if not self.sessions:
-                QMessageBox.warning(self, '警告', '请先添加Session！')
+        if not self.sessions:
+            QMessageBox.warning(self, '警告', '请先添加Session！')
+            return
+        if not self.phone_numbers:
+            QMessageBox.warning(self, '警告', '请先添加要发送的号码！')
+            return
+        dialog = SendMessageDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            message = dialog.get_message()
+            if not message:
+                QMessageBox.warning(self, '警告', '消息内容不能为空！')
                 return
+            # 清空状态文本框
+            self.status_text.clear()
+            self.log("开始批量发送消息...")
+            # UI状态可根据需要调整
+            self.start_btn.setEnabled(False)
+            self.check_activity_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            # 启动消息发送线程
+            from utils.threading_utils import SendMsgThread
+            self.send_thread = SendMsgThread(
+                self.phone_numbers.copy(), message, self.sessions, self)
+            self.send_thread.log_signal.connect(self.log)
+            self.send_thread.progress_signal.connect(self.update_progress)
+            self.send_thread.send_complete_signal.connect(
+                self.send_msg_completed)
+            self.send_thread.start()
 
-            if not self.phone_numbers:
-                QMessageBox.warning(self, '警告', '请先添加要检查的号码！')
-                return
+    def send_msg_completed(self, result):
+        self.start_btn.setEnabled(True)
+        self.check_activity_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        msg = f"消息发送完成！成功: {result.get('success', 0)}，失败: {result.get('fail', 0)}"
+        if result.get('fail_detail'):
+            msg += "\n失败详情：\n" + "\n".join(result['fail_detail'][:10])
+            if len(result['fail_detail']) > 10:
+                msg += f"\n...共{len(result['fail_detail'])}条失败"
+        QMessageBox.information(self, '完成', msg)
 
-            dialog = SendMessageDialog(self)
-            if dialog.exec_() == QDialog.Accepted:
-                message = dialog.get_message()
-
-                # 清空状态文本框
-                self.status_text.clear()
-                self.log("开始检测...")
-
-                # 更新UI状态
-                self.start_btn.setEnabled(False)
-                self.check_activity_btn.setEnabled(False)
-                self.stop_btn.setEnabled(True)
-
-                # 创建并启动检查线程
-                self.check_thread = CheckThread(
-                    self.phone_numbers.copy(), self.sessions, self)
-                self.check_thread.log_signal.connect(self.log)
-                self.check_thread.progress_signal.connect(self.update_progress)
-                self.check_thread.session_status_signal.connect(
-                    self.update_session_status)
-                self.check_thread.check_complete_signal.connect(
-                    self.check_completed)
-                self.check_thread.start()
-        except Exception as e:
-            import traceback
-            error_msg = f"启动筛选检测时出错: {str(e)}\n{traceback.format_exc()}"
-            self.log(f"【严重错误】{error_msg}")
-            QMessageBox.critical(
-                self, '错误', f"启动检测时发生错误：\n{str(e)}\n\n请检查程序日志获取详细信息。")
-
-            # 恢复UI状态
-            self.start_btn.setEnabled(True)
-            self.check_activity_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
- 
-    
     def start_check(self):
         try:
             if not self.sessions:

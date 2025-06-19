@@ -590,3 +590,83 @@ class ActivityCheckThread(QThread):
             self.log_signal.emit("【停止信号】正在结束当前检测批次...")
         except Exception as e:
             self.log_signal.emit(f"【停止错误】停止过程中出错: {str(e)}")
+
+
+class SendMsgThread(QThread):
+    log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int, int)
+    session_status_signal = pyqtSignal(str, str, str)
+    send_complete_signal = pyqtSignal(dict)
+
+    def __init__(self, phone_numbers, message, sessions, parent=None):
+        super().__init__(parent)
+        self.phone_numbers = phone_numbers
+        self.message = message
+        self.sessions = sessions
+        self.is_running = True
+        self.parent = parent
+        self.batch_size = 5000
+        self.processed_numbers = set()
+        self.result = {"success": 0, "fail": 0, "fail_detail": []}
+
+    async def send_messages(self):
+        try:
+            self.log_signal.emit("【初始化】开始批量发送消息...")
+            total = len(self.phone_numbers)
+            sent = 0
+            api_id = self.parent.config.getint('API', 'api_id', fallback=2040)
+            api_hash = self.parent.config.get(
+                'API', 'api_hash', fallback='b18441a1ff607e10a989891a5462e627')
+            for session in self.sessions:
+                try:
+                    client = TelegramClient(
+                        session.file_path, api_id, api_hash)
+                    await client.connect()
+                    if not await client.is_user_authorized():
+                        await client.disconnect()
+                        self.log_signal.emit(f"Session {session.name} 未授权，跳过")
+                        continue
+                    # 导入联系人
+                    contacts = [InputPhoneContact(
+                        client_id=i, phone=phone, first_name="", last_name="") for i, phone in enumerate(self.phone_numbers)]
+                    result = await client(ImportContactsRequest(contacts))
+                    users = result.users
+                    for user in users:
+                        if not self.is_running:
+                            break
+                        try:
+                            await client.send_message(user.id, self.message)
+                            self.result["success"] += 1
+                        except Exception as e:
+                            self.result["fail"] += 1
+                            self.result["fail_detail"].append(
+                                f"{getattr(user, 'phone', '')}: {e}")
+                            self.log_signal.emit(
+                                f"发送消息失败: {getattr(user, 'phone', '')} - {e}")
+                        sent += 1
+                        self.progress_signal.emit(
+                            sent, total * len(self.sessions))
+                    await client.disconnect()
+                except Exception as e:
+                    self.log_signal.emit(f"Session {session.name} 发送消息出错: {e}")
+            self.send_complete_signal.emit(self.result)
+        except Exception as e:
+            self.log_signal.emit(f"【线程错误】发送消息线程错误: {str(e)}")
+            self.send_complete_signal.emit(self.result)
+
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.send_messages())
+        except Exception as e:
+            self.log_signal.emit(f"【线程错误】发送消息线程run出错: {str(e)}")
+        finally:
+            try:
+                loop.close()
+            except Exception as close_error:
+                self.log_signal.emit(f"【关闭错误】关闭事件循环时出错: {str(close_error)}")
+
+    def stop(self):
+        self.is_running = False
+        self.log_signal.emit("【停止信号】正在结束当前消息发送批次...")
