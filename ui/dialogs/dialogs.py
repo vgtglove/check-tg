@@ -125,7 +125,7 @@ class AboutDialog(QDialog):
             "Telegram消息工具是一款高效的电话号码检测软件，用于确认哪些电话号码已在Telegram上注册。")
         description.setWordWrap(True)
         description.setAlignment(Qt.AlignCenter)
-        copyright_label = QLabel("© 2025 乔法克斯 版权所有")
+        copyright_label = QLabel("© 2025 zat 版权所有")
         copyright_label.setAlignment(Qt.AlignCenter)
         ok_button = QPushButton("确定")
         ok_button.clicked.connect(self.accept)

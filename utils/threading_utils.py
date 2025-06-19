@@ -610,13 +610,28 @@ class SendMsgThread(QThread):
         self.result = {"success": 0, "fail": 0, "fail_detail": []}
 
     async def send_messages(self):
+        """
+        异步发送消息给指定的手机号列表，支持未注册统计、去重、失败重试、进度优化。
+        """
         try:
             self.log_signal.emit("【初始化】开始批量发送消息...")
-            total = len(self.phone_numbers)
+
+            # 1. 手机号去重
+            unique_phones = list(set(self.phone_numbers))
+            total = len(unique_phones)
             sent = 0
+
             api_id = self.parent.config.getint('API', 'api_id', fallback=2040)
             api_hash = self.parent.config.get(
                 'API', 'api_hash', fallback='b18441a1ff607e10a989891a5462e627')
+
+            # 记录未注册号码
+            not_registered = set()
+            # 记录已成功发送的号码，避免多 session 重复发
+            already_sent = set()
+            # 失败重试队列
+            retry_queue = []
+
             for session in self.sessions:
                 try:
                     client = TelegramClient(
@@ -626,30 +641,92 @@ class SendMsgThread(QThread):
                         await client.disconnect()
                         self.log_signal.emit(f"Session {session.name} 未授权，跳过")
                         continue
-                    # 导入联系人
+
+                    # 只对未发送过的号码导入
+                    phones_to_send = [
+                        p for p in unique_phones if p not in already_sent]
+                    if not phones_to_send:
+                        await client.disconnect()
+                        continue
+
                     contacts = [InputPhoneContact(
-                        client_id=i, phone=phone, first_name="", last_name="") for i, phone in enumerate(self.phone_numbers)]
-                    result = await client(ImportContactsRequest(contacts))
+                        client_id=i, phone=phone, first_name="", last_name="") for i, phone in enumerate(phones_to_send)]
+                    try:
+                        result = await client(ImportContactsRequest(contacts))
+                    except Exception as e:
+                        self.log_signal.emit(f"导入联系人失败: {e}")
+                        await client.disconnect()
+                        continue
+
                     users = result.users
+                    # 记录已注册号码
+                    registered_phones = set()
+                    user_map = {}
                     for user in users:
+                        # user.phone 可能不存在，需兼容
+                        phone = getattr(user, 'phone', None)
+                        if phone:
+                            registered_phones.add(phone)
+                            user_map[phone] = user
+
+                    # 统计未注册号码
+                    for phone in phones_to_send:
+                        if phone not in registered_phones:
+                            not_registered.add(phone)
+
+                    # 只对未发送过且已注册的号码发消息
+                    for phone in registered_phones:
                         if not self.is_running:
                             break
+                        if phone in already_sent:
+                            continue
+                        user = user_map[phone]
                         try:
-                            await client.send_message(user.id, self.message)
+                            entity = await client.get_entity(user.id)
+                            await client.send_message(entity, self.message)
                             self.result["success"] += 1
+                            already_sent.add(phone)
                         except Exception as e:
                             self.result["fail"] += 1
-                            self.result["fail_detail"].append(
-                                f"{getattr(user, 'phone', '')}: {e}")
-                            self.log_signal.emit(
-                                f"发送消息失败: {getattr(user, 'phone', '')} - {e}")
+                            self.result["fail_detail"].append(f"{phone}: {e}")
+                            retry_queue.append(
+                                (session, phone, user.id, str(e)))
+                            self.log_signal.emit(f"发送消息失败: {phone} - {e}")
                         sent += 1
-                        self.progress_signal.emit(
-                            sent, total * len(self.sessions))
+                        self.progress_signal.emit(sent, total)
                     await client.disconnect()
                 except Exception as e:
                     self.log_signal.emit(f"Session {session.name} 发送消息出错: {e}")
-            self.send_complete_signal.emit(self.result)
+
+            # 失败重试一次
+            if retry_queue:
+                self.log_signal.emit("【重试】开始对失败号码重试一次...")
+                for session, phone, user_id, err in retry_queue:
+                    if not self.is_running:
+                        break
+                    try:
+                        client = TelegramClient(
+                            session.file_path, api_id, api_hash)
+                        await client.connect()
+                        if not await client.is_user_authorized():
+                            await client.disconnect()
+                            continue
+                        try:
+                            await client.send_message(user_id, self.message)
+                            self.result["success"] += 1
+                            self.result["fail"] -= 1
+                            self.log_signal.emit(f"重试成功: {phone}")
+                        except Exception as e:
+                            self.log_signal.emit(f"重试仍失败: {phone} - {e}")
+                        await client.disconnect()
+                    except Exception as e:
+                        self.log_signal.emit(f"重试时Session出错: {phone} - {e}")
+
+            # 发送完成后发送完成信号，附带未注册号码
+            self.send_complete_signal.emit({
+                **self.result,
+                "not_registered": list(not_registered)
+            })
         except Exception as e:
             self.log_signal.emit(f"【线程错误】发送消息线程错误: {str(e)}")
             self.send_complete_signal.emit(self.result)
@@ -670,3 +747,19 @@ class SendMsgThread(QThread):
     def stop(self):
         self.is_running = False
         self.log_signal.emit("【停止信号】正在结束当前消息发送批次...")
+
+    def send_msg_completed(self, result):
+        self.start_btn.setEnabled(True)
+        self.check_activity_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        msg = f"消息发送完成！成功: {result.get('success', 0)}，失败: {result.get('fail', 0)}"
+        if result.get('fail_detail'):
+            msg += "\n失败详情：\n" + "\n".join(result['fail_detail'][:10])
+            if len(result['fail_detail']) > 10:
+                msg += f"\n...共{len(result['fail_detail'])}条失败"
+        if result.get('not_registered'):
+            msg += f"\n未注册号码({len(result['not_registered'])}):\n" + \
+                ", ".join(result['not_registered'][:10])
+            if len(result['not_registered']) > 10:
+                msg += f"\n...共{len(result['not_registered'])}个未注册"
+        # QMessageBox.information(self, '完成', msg)

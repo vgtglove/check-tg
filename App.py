@@ -4626,7 +4626,7 @@ if __name__ == '__main__':
                 painter.setFont(copyright_font)
                 painter.setPen(QPen(QColor("#78909C"), 1))
                 painter.drawText(QRect(0, 250, self.width(), 20),
-                                 Qt.AlignCenter, "© 2025 乔法克斯 版权所有")
+                                 Qt.AlignCenter, "© 2025 zat 版权所有")
 
         # 创建启动屏幕
         splash = CustomSplashScreen()
