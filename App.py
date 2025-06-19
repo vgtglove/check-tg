@@ -2486,12 +2486,12 @@ class TelegramGUI(QMainWindow):
     def add_session(self):
         """扫描并添加新的session文件"""
         # 优先使用环境变量中设置的sessions目录路径
-        if 'SESSIONS_DIR' in os.environ and os.environ['SESSIONS_DIR']:
-            base_dir = os.environ['SESSIONS_DIR']
-        else:
+        # if 'SESSIONS_DIR' in os.environ and os.environ['SESSIONS_DIR']:
+        #     base_dir = os.environ['SESSIONS_DIR']
+        # else:
             # 如果环境变量未设置，则使用相对路径
-            base_dir = os.path.join(os.path.dirname(
-                os.path.abspath(__file__)), 'sessions')
+        base_dir = os.path.join(os.path.dirname(
+            os.path.abspath(__file__)), 'sessions')
 
         # 如果sessions目录不存在则创建
         if not os.path.exists(base_dir):
