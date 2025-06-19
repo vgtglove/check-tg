@@ -10,6 +10,13 @@
       "request": "launch",
       "program": "${workspaceFolder}/telegram_gui.py",
       "console": "integratedTerminal"
+    },
+    {
+      "name": "Python Debugger: App.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/App.py",
+      "console": "integratedTerminal"
     }
   ]
 }
