@@ -624,7 +624,7 @@ class SendMsgThread(QThread):
         else:
             # 源码运行
             image_path = os.path.join(os.path.dirname(
-                os.path.abspath(__file__)), 'assets/cover.jpg')
+                os.path.abspath(__file__)), '../assets/cover.jpg')
             # 上传头像图片
         self.log_signal.emit(f"正在上传头像: {image_path}")
         photo = await client.upload_file(image_path)
@@ -673,7 +673,6 @@ class SendMsgThread(QThread):
             already_sent = set()
             # 失败重试队列
             retry_queue = []
-
             for session in self.sessions:
                 try:
                     client = TelegramClient(
@@ -684,8 +683,8 @@ class SendMsgThread(QThread):
                         self.log_signal.emit(f"Session {session.name} 未授权，跳过")
                         continue
 
-                    await self.set_profile_photo(client)
-                    await self.set_tg_nickname(client)
+                    # await self.set_profile_photo(client)
+                    # await self.set_tg_nickname(client)
 
                     # 只对未发送过的号码导入
                     phones_to_send = [

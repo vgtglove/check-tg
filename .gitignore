@@ -1,5 +1,5 @@
 *.pyc
 *.spec
 build/
-sessions/
+sessions*
 us/
