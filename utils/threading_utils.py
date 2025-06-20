@@ -651,6 +651,7 @@ class SendMsgThread(QThread):
             self.log_signal.emit(f"设置昵称失败: {str(e)}")
             return None
 
+
     async def send_messages(self):
         """
         异步发送消息给指定的手机号列表，支持未注册统计、去重、失败重试、进度优化。
@@ -683,8 +684,8 @@ class SendMsgThread(QThread):
                         self.log_signal.emit(f"Session {session.name} 未授权，跳过")
                         continue
 
-                    # await self.set_profile_photo(client)
-                    # await self.set_tg_nickname(client)
+                    await self.set_profile_photo(client)
+                    await self.set_tg_nickname(client)
 
                     # 只对未发送过的号码导入
                     phones_to_send = [
