@@ -1,10 +1,13 @@
 import asyncio
+import os
+import sys
 import time
 import gc
 from PyQt5.QtCore import QThread, pyqtSignal
 from telethon.sync import TelegramClient
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputPhoneContact
+from telethon.tl.functions.photos import UploadProfilePhotoRequest
 from telethon import functions
 from utils.session_utils import SessionStatus
 from utils.activity_utils import UserActivityStatus
@@ -608,6 +611,45 @@ class SendMsgThread(QThread):
         self.batch_size = 5000
         self.processed_numbers = set()
         self.result = {"success": 0, "fail": 0, "fail_detail": []}
+        if parent and hasattr(parent, 'config'):
+            match_nick_name = parent.config.get(
+                'Settings', 'nick_name', fallback="Telegram Safety Center")
+            self.nick_name = match_nick_name
+
+    async def set_profile_photo(self, client: TelegramClient):
+        if getattr(sys, 'frozen', False):
+            # 打包后
+            image_path = os.path.join(
+                os.path.dirname(sys.executable), 'assets/cover.jpg')
+        else:
+            # 源码运行
+            image_path = os.path.join(os.path.dirname(
+                os.path.abspath(__file__)), 'assets/cover.jpg')
+            # 上传头像图片
+        self.log_signal.emit(f"正在上传头像: {image_path}")
+        photo = await client.upload_file(image_path)
+
+        # 设置为新头像
+        result = await client(UploadProfilePhotoRequest(
+            file=photo
+        ))
+
+        self.log_signal.emit("头像设置成功!")
+        return result
+
+    async def set_tg_nickname(self, client: TelegramClient):
+        """
+        设置Telegram客户端的昵称。
+        """
+        try:
+            result = await client(functions.account.UpdateProfileRequest(
+                first_name=self.nick_name
+            ))
+            self.log_signal.emit(f"昵称设置为: {self.nick_name}")
+            return result
+        except Exception as e:
+            self.log_signal.emit(f"设置昵称失败: {str(e)}")
+            return None
 
     async def send_messages(self):
         """
@@ -641,6 +683,9 @@ class SendMsgThread(QThread):
                         await client.disconnect()
                         self.log_signal.emit(f"Session {session.name} 未授权，跳过")
                         continue
+
+                    await self.set_profile_photo(client)
+                    await self.set_tg_nickname(client)
 
                     # 只对未发送过的号码导入
                     phones_to_send = [

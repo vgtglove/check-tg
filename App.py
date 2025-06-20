@@ -2490,8 +2490,14 @@ class TelegramGUI(QMainWindow):
         #     base_dir = os.environ['SESSIONS_DIR']
         # else:
             # 如果环境变量未设置，则使用相对路径
-        base_dir = os.path.join(os.path.dirname(
-            os.path.abspath(__file__)), 'sessions')
+        if getattr(sys, 'frozen', False):
+            # 打包后
+            base_dir = os.path.join(
+                os.path.dirname(sys.executable), 'sessions')
+        else:
+            # 源码运行
+            base_dir = os.path.join(os.path.dirname(
+                os.path.abspath(__file__)), 'sessions')
 
         # 如果sessions目录不存在则创建
         if not os.path.exists(base_dir):
